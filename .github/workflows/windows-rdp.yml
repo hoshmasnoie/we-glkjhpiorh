@@ -1,58 +1,85 @@
-name: V2Ray Config Generator
+name: Temporary VLESS Server
 
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner OS"
+        required: true
+        type: choice
+        options:
+          - linux
+          - windows
+      duration_hours:
+        description: "Max runtime in hours (1-6)"
+        required: true
+        type: number
+        default: 6
+      port:
+        description: "Preferred listen port (0 = random high port)"
+        required: false
+        type: number
+        default: 0
 
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 10
+  vless:
+    runs-on: ${{ inputs.os == 'windows' && 'windows-self-hosted' || 'linux-self-hosted' }}  # adjust labels to your runners
+    timeout-minutes: 370   # ~6h + buffer
 
     steps:
-      - name: Checkout
+      - name: Checkout (minimal)
         uses: actions/checkout@v4
-
-      - name: Install Xray Core
-        shell: pwsh
-        run: |
-          $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
-          Invoke-WebRequest $url -OutFile xray.zip
-          Expand-Archive xray.zip -DestinationPath xray
-          if (!(Test-Path "xray/xray.exe")) {
-            throw "Xray installation failed"
-          }
-
-      - name: Generate Test Configuration
-        shell: pwsh
-        run: |
-          $uuid = [guid]::NewGuid().ToString()
-
-          $config = @{
-            log = @{
-              loglevel = "warning"
-            }
-            inbounds = @()
-            outbounds = @(
-              @{
-                protocol = "freedom"
-                tag = "direct"
-              }
-            )
-          }
-
-          $config | ConvertTo-Json -Depth 10 |
-            Set-Content config.json -Encoding utf8
-
-          Write-Host "Test configuration generated."
-          Write-Host "UUID generated: $uuid"
-
-      - name: Validate Configuration
-        shell: pwsh
-        run: |
-          & ".\xray\xray.exe" run -test -c config.json
-
-      - name: Upload Configuration
-        uses: actions/upload-artifact@v4
         with:
-          name: v2ray-test-config
-          path: config.json
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Inspect environment & networking
+        id: net
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Runner environment ==="
+          uname -a || true
+          echo "OS input: ${{ inputs.os }}"
+          # Public IP detection (multiple providers for resilience)
+          PUBLIC_IP=""
+          for url in https://ifconfig.me https://api.ipify.org https://icanhazip.com; do
+            PUBLIC_IP=$(curl -4 -s --max-time 5 "$url" || true)
+            [[ -n "$PUBLIC_IP" ]] && break
+          done
+          echo "Detected public IPv4: ${PUBLIC_IP:-unknown}"
+          echo "public_ip=${PUBLIC_IP:-unknown}" >> $GITHUB_OUTPUT
+
+          # Basic outbound check
+          if curl -4 -s --max-time 5 https://www.google.com >/dev/null; then
+            echo "Outbound HTTPS: OK"
+          else
+            echo "Outbound HTTPS: FAILED – Xray download may fail"
+          fi
+
+          # Note about inbound
+          echo "WARNING: Inbound reachability cannot be guaranteed from inside the runner."
+          echo "You must verify that TCP to the chosen port is allowed by firewall/NAT/security groups."
+
+      - name: Prepare scripts (Linux)
+        if: inputs.os == 'linux'
+        run: |
+          chmod +x scripts/*.sh
+
+      - name: Run VLESS server (Linux)
+        if: inputs.os == 'linux'
+        env:
+          DURATION_HOURS: ${{ inputs.duration_hours }}
+          PREFERRED_PORT: ${{ inputs.port }}
+          PUBLIC_IP: ${{ steps.net.outputs.public_ip }}
+        run: ./scripts/run-vless-linux.sh
+
+      - name: Run VLESS server (Windows)
+        if: inputs.os == 'windows'
+        env:
+          DURATION_HOURS: ${{ inputs.duration_hours }}
+          PREFERRED_PORT: ${{ inputs.port }}
+          PUBLIC_IP: ${{ steps.net.outputs.public_ip }}
+        shell: pwsh
+        run: ./scripts/run-vless-windows.ps1
