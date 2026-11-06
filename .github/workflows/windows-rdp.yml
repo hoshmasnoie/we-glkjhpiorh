@@ -1,0 +1,58 @@
+name: V2Ray Config Generator
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Xray Core
+        shell: pwsh
+        run: |
+          $url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+          Invoke-WebRequest $url -OutFile xray.zip
+          Expand-Archive xray.zip -DestinationPath xray
+          if (!(Test-Path "xray/xray.exe")) {
+            throw "Xray installation failed"
+          }
+
+      - name: Generate Test Configuration
+        shell: pwsh
+        run: |
+          $uuid = [guid]::NewGuid().ToString()
+
+          $config = @{
+            log = @{
+              loglevel = "warning"
+            }
+            inbounds = @()
+            outbounds = @(
+              @{
+                protocol = "freedom"
+                tag = "direct"
+              }
+            )
+          }
+
+          $config | ConvertTo-Json -Depth 10 |
+            Set-Content config.json -Encoding utf8
+
+          Write-Host "Test configuration generated."
+          Write-Host "UUID generated: $uuid"
+
+      - name: Validate Configuration
+        shell: pwsh
+        run: |
+          & ".\xray\xray.exe" run -test -c config.json
+
+      - name: Upload Configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2ray-test-config
+          path: config.json
